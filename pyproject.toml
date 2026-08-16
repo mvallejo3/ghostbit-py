@@ -30,6 +30,10 @@ dependencies = [
     "scipy>=1.10.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/mvallejo3/ghostbit-py"
+Repository = "https://github.com/mvallejo3/ghostbit-py"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
