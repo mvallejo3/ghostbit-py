@@ -29,10 +29,13 @@ def encode_lsb(img_path, message, output_path):
     width, height = img.size
     pixels = np.array(img)
     
-    # Convert message to binary string
+    # Convert the message (with a null delimiter) to a flat big-endian bit array.
+    # latin-1 maps each character 0-255 to a single byte, matching the previous
+    # per-character format(ord(c), '08b') behavior for ASCII/base64 payloads.
     message += chr(0)  # Null delimiter
-    binary_message = ''.join(format(ord(c), '08b') for c in message)
-    message_length = len(binary_message)
+    message_bytes = np.frombuffer(message.encode('latin-1'), dtype=np.uint8)
+    bits = np.unpackbits(message_bytes)  # big-endian, equivalent to '08b'
+    message_length = bits.size
     
     # Check if image has enough capacity (3 bits per pixel)
     max_capacity = width * height * 3
@@ -40,22 +43,10 @@ def encode_lsb(img_path, message, output_path):
         raise ValueError(f"Message too long. Max capacity: {max_capacity} bits, "
                         f"message requires: {message_length} bits")
     
-    # Embed message bits into LSBs
-    bit_index = 0
-    for y in range(height):
-        for x in range(width):
-            for channel in range(3):  # RGB channels
-                if bit_index < message_length:
-                    # Clear LSB and set it to message bit
-                    # Use 0xFE (254) instead of ~1 to avoid signed integer issues with uint8
-                    pixels[y, x, channel] = (pixels[y, x, channel] & 0xFE) | int(binary_message[bit_index])
-                    bit_index += 1
-                else:
-                    break
-            if bit_index >= message_length:
-                break
-        if bit_index >= message_length:
-            break
+    # Embed message bits into the LSBs of the flattened RGB channels.
+    # C-order flatten iterates y -> x -> channel, matching the original loop.
+    flat = pixels.reshape(-1)
+    flat[:message_length] = (flat[:message_length] & 0xFE) | bits
     
     # Save stego-image
     stego_img = Image.fromarray(pixels)
@@ -79,28 +70,28 @@ def decode_lsb(img_path):
     if img.mode != 'RGB':
         img = img.convert('RGB')
     
-    width, height = img.size
     pixels = np.array(img)
+    flat = pixels.reshape(-1)
     
-    # Extract LSBs
-    binary_message = []
-    for y in range(height):
-        for x in range(width):
-            for channel in range(3):  # RGB channels
-                # Extract LSB
-                binary_message.append(str(pixels[y, x, channel] & 1))
+    # Walk the LSB stream in byte-aligned chunks, packing bits into bytes and
+    # stopping at the null delimiter. Chunking avoids processing every pixel of
+    # a large cover when the message is short. chunk_bits is a multiple of 8 so
+    # chunk boundaries always fall on byte boundaries.
+    chunk_bits = 1 << 20
+    out = bytearray()
+    for start in range(0, flat.size, chunk_bits):
+        seg = (flat[start:start + chunk_bits] & 1).astype(np.uint8)
+        n = (seg.size // 8) * 8
+        if n == 0:
+            break
+        byte_vals = np.packbits(seg[:n])
+        nul = np.nonzero(byte_vals == 0)[0]
+        if nul.size:
+            out.extend(byte_vals[:nul[0]].tobytes())
+            return out.decode('latin-1')
+        out.extend(byte_vals.tobytes())
     
-    # Convert binary string to message
-    message = []
-    for i in range(0, len(binary_message), 8):
-        byte = ''.join(binary_message[i:i+8])
-        if len(byte) == 8:
-            char = chr(int(byte, 2))
-            if char == chr(0):  # Null delimiter found
-                return ''.join(message)
-            message.append(char)
-    
-    return ''.join(message)
+    return out.decode('latin-1')
 
 
 def encode_dct(img_path, message, output_path, block_size=8):
